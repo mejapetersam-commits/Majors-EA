@@ -1,0 +1,16 @@
+name = "majors-ea"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+[vars]
+MODEL = "claude-sonnet-5-5"
+OWNER_NAME = "Major"
+
+# Checks for due reminders every minute
+[triggers]
+crons = ["* * * * *"]
+
+# Secrets (set with `wrangler secret put NAME`):
+# WHATSAPP_TOKEN, WHATSAPP_PHONE_ID, VERIFY_TOKEN, APP_SECRET,
+# ANTHROPIC_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY,
+# OWNER_NUMBER  (your WhatsApp number, digits only, e.g. 2547XXXXXXXX)
