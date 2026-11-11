@@ -1,6 +1,16 @@
 {
   "name": "majors-ea",
   "private": true,
-  "scripts": { "dev": "wrangler dev", "deploy": "wrangler deploy" },
-  "devDependencies": { "wrangler": "^4.0.0", "@cloudflare/workers-types": "^4.0.0", "typescript": "^5.5.0" }
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
+    "typescript": "^5.5.0",
+    "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.2.0"
+  }
 }

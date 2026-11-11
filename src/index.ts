@@ -1,11 +1,12 @@
+import { neon } from '@neondatabase/serverless';
+
 export interface Env {
   WHATSAPP_TOKEN: string;
   WHATSAPP_PHONE_ID: string;
   VERIFY_TOKEN: string;
   APP_SECRET: string;
   ANTHROPIC_API_KEY: string;
-  SUPABASE_URL: string;
-  SUPABASE_SERVICE_KEY: string;
+  DATABASE_URL: string;
   OWNER_NUMBER: string;
   MODEL: string;
   OWNER_NAME: string;
@@ -15,16 +16,7 @@ const enc = new TextEncoder();
 
 /* ---------- helpers ---------- */
 
-const sb = (env: Env, path: string, init: RequestInit = {}) =>
-  fetch(`${env.SUPABASE_URL}/rest/v1/${path}`, {
-    ...init,
-    headers: {
-      apikey: env.SUPABASE_SERVICE_KEY,
-      Authorization: `Bearer ${env.SUPABASE_SERVICE_KEY}`,
-      'Content-Type': 'application/json',
-      ...(init.headers || {}),
-    },
-  });
+const db = (env: Env) => neon(env.DATABASE_URL);
 
 async function verifySignature(body: string, sig: string | null, secret: string) {
   if (!sig) return false;
@@ -44,6 +36,8 @@ async function sendWhatsApp(env: Env, to: string, text: string) {
 
 const nairobiNow = () =>
   new Date().toLocaleString('en-KE', { timeZone: 'Africa/Nairobi', dateStyle: 'full', timeStyle: 'short' });
+
+const fmt = (d: any) => new Date(d).toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' });
 
 /* ---------- tools ---------- */
 
@@ -74,7 +68,7 @@ const TOOLS = [
   },
   {
     name: 'set_brand_profile',
-    description: 'Save one part of the owner\'s brand profile (e.g. niche, audience, platforms, tone, topics_to_own, topics_to_avoid, posting_frequency, example_posts). Overwrites that key.',
+    description: "Save one part of the owner's brand profile (e.g. niche, audience, platforms, tone, topics_to_own, topics_to_avoid, posting_frequency, example_posts). Overwrites that key.",
     input_schema: { type: 'object', properties: { key: { type: 'string' }, value: { type: 'string' } }, required: ['key', 'value'] },
   },
   {
@@ -97,7 +91,7 @@ const TOOLS = [
   },
   {
     name: 'update_draft',
-    description: 'Edit a draft\'s content and/or change its status (draft, approved, rejected).',
+    description: "Edit a draft's content and/or change its status (draft, approved, rejected).",
     input_schema: {
       type: 'object',
       properties: { id: { type: 'number' }, content: { type: 'string' }, status: { type: 'string' } },
@@ -107,60 +101,47 @@ const TOOLS = [
 ];
 
 async function runTool(env: Env, name: string, input: any): Promise<string> {
+  const sql = db(env);
   try {
     if (name === 'remember') {
-      await sb(env, 'memories', { method: 'POST', body: JSON.stringify({ content: input.fact }) });
+      await sql`insert into memories (content) values (${input.fact})`;
       return 'Saved.';
     }
     if (name === 'recall') {
-      const q = encodeURIComponent(`*${input.query}*`);
-      const r = await sb(env, `memories?content=ilike.${q}&order=created_at.desc&limit=10`);
-      const rows: any[] = await r.json();
+      const like = `%${input.query}%`;
+      const rows = (await sql`select content from memories where content ilike ${like} order by created_at desc limit 10`) as any[];
       return rows.length ? rows.map((m) => `- ${m.content}`).join('\n') : 'Nothing found.';
     }
     if (name === 'add_reminder') {
       const due = new Date(input.due_at);
       if (isNaN(due.getTime())) return 'Invalid date.';
-      await sb(env, 'reminders', { method: 'POST', body: JSON.stringify({ text: input.text, due_at: due.toISOString() }) });
-      return `Reminder set for ${due.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}.`;
+      await sql`insert into reminders (text, due_at) values (${input.text}, ${due.toISOString()})`;
+      return `Reminder set for ${fmt(due)}.`;
     }
     if (name === 'list_reminders') {
-      const r = await sb(env, 'reminders?sent=eq.false&order=due_at.asc&limit=20');
-      const rows: any[] = await r.json();
-      return rows.length
-        ? rows.map((x) => `- ${new Date(x.due_at).toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}: ${x.text}`).join('\n')
-        : 'No upcoming reminders.';
+      const rows = (await sql`select text, due_at from reminders where sent = false order by due_at asc limit 20`) as any[];
+      return rows.length ? rows.map((x) => `- ${fmt(x.due_at)}: ${x.text}`).join('\n') : 'No upcoming reminders.';
     }
     if (name === 'set_brand_profile') {
-      await sb(env, 'brand_profile?on_conflict=key', {
-        method: 'POST',
-        headers: { Prefer: 'resolution=merge-duplicates' },
-        body: JSON.stringify({ key: input.key, value: input.value }),
-      });
+      await sql`insert into brand_profile (key, value) values (${input.key}, ${input.value})
+                on conflict (key) do update set value = excluded.value, updated_at = now()`;
       return 'Saved.';
     }
     if (name === 'save_draft') {
-      const r = await sb(env, 'drafts', {
-        method: 'POST',
-        headers: { Prefer: 'return=representation' },
-        body: JSON.stringify({ platform: input.platform, content: input.content, notes: input.notes || null }),
-      });
-      const [d]: any[] = await r.json();
-      return `Draft #${d.id} saved.`;
+      const rows = (await sql`insert into drafts (platform, content, notes)
+                              values (${input.platform}, ${input.content}, ${input.notes || null}) returning id`) as any[];
+      return `Draft #${rows[0].id} saved.`;
     }
     if (name === 'list_drafts') {
-      const status = encodeURIComponent(input.status || 'draft');
-      const r = await sb(env, `drafts?status=eq.${status}&order=id.desc&limit=15`);
-      const rows: any[] = await r.json();
+      const status = input.status || 'draft';
+      const rows = (await sql`select id, platform, content, notes from drafts where status = ${status} order by id desc limit 15`) as any[];
       return rows.length
         ? rows.map((d) => `#${d.id} [${d.platform}] ${d.content}${d.notes ? `\n(notes: ${d.notes})` : ''}`).join('\n\n')
         : 'No drafts.';
     }
     if (name === 'update_draft') {
-      const patch: any = {};
-      if (input.content) patch.content = input.content;
-      if (input.status) patch.status = input.status;
-      await sb(env, `drafts?id=eq.${input.id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+      if (input.content) await sql`update drafts set content = ${input.content} where id = ${input.id}`;
+      if (input.status) await sql`update drafts set status = ${input.status} where id = ${input.id}`;
       return `Draft #${input.id} updated.`;
     }
     return 'Unknown tool.';
@@ -172,8 +153,8 @@ async function runTool(env: Env, name: string, input: any): Promise<string> {
 /* ---------- agent loop ---------- */
 
 async function think(env: Env, history: { role: string; content: any }[]) {
-  const pr = await sb(env, 'brand_profile?select=key,value');
-  const prRows: any[] = pr.ok ? await pr.json() : [];
+  const sql = db(env);
+  const prRows = (await sql`select key, value from brand_profile`) as any[];
   const profileText = prRows.length ? prRows.map((r) => `- ${r.key}: ${r.value}`).join('\n') : '(empty)';
 
   const system = `You are ${env.OWNER_NAME}'s EA (executive assistant), talking over WhatsApp.
@@ -227,20 +208,17 @@ async function handleMessage(env: Env, msg: any) {
     return;
   }
   const text: string = msg.text.body;
+  const sql = db(env);
 
   // Dedup (WhatsApp retries webhooks)
-  const ins = await sb(env, 'messages', {
-    method: 'POST',
-    headers: { Prefer: 'resolution=ignore-duplicates,return=representation' },
-    body: JSON.stringify({ wa_msg_id: msg.id, role: 'user', content: text }),
-  });
-  const inserted: any[] = await ins.json();
+  const inserted = (await sql`insert into messages (wa_msg_id, role, content) values (${msg.id}, 'user', ${text})
+                              on conflict (wa_msg_id) do nothing returning id`) as any[];
   if (!inserted.length) return;
 
   // Last 20 turns of history (includes the message just stored)
-  const h = await sb(env, 'messages?select=role,content&order=id.desc&limit=20');
-  const rows: any[] = await h.json();
-  const history = rows.reverse();
+  const history = (await sql`select role, content from (
+                               select id, role, content from messages order by id desc limit 20
+                             ) t order by id asc`) as any[];
   while (history.length && history[0].role !== 'user') history.shift();
 
   let reply: string;
@@ -250,7 +228,7 @@ async function handleMessage(env: Env, msg: any) {
     console.error(e);
     reply = 'Something broke on my end. Check the Worker logs.';
   }
-  await sb(env, 'messages', { method: 'POST', body: JSON.stringify({ role: 'assistant', content: reply }) });
+  await sql`insert into messages (role, content) values ('assistant', ${reply})`;
   await sendWhatsApp(env, from, reply);
 }
 
@@ -265,7 +243,7 @@ export default {
       if (url.searchParams.get('hub.verify_token') === env.VERIFY_TOKEN) {
         return new Response(url.searchParams.get('hub.challenge') || '', { status: 200 });
       }
-      return new Response('Forbidden', { status: 403 });
+      return new Response("Major's EA online");
     }
 
     if (req.method === 'POST') {
@@ -279,16 +257,15 @@ export default {
       return new Response('ok'); // ack fast
     }
 
-    return new Response('Major\'s EA online');
+    return new Response("Major's EA online");
   },
 
   async scheduled(_e: ScheduledEvent, env: Env) {
-    const now = new Date().toISOString();
-    const r = await sb(env, `reminders?sent=eq.false&due_at=lte.${encodeURIComponent(now)}`);
-    const due: any[] = await r.json();
+    const sql = db(env);
+    const due = (await sql`select id, text from reminders where sent = false and due_at <= now()`) as any[];
     for (const x of due) {
       await sendWhatsApp(env, env.OWNER_NUMBER, `⏰ Reminder: ${x.text}`);
-      await sb(env, `reminders?id=eq.${x.id}`, { method: 'PATCH', body: JSON.stringify({ sent: true }) });
+      await sql`update reminders set sent = true where id = ${x.id}`;
     }
   },
 };
